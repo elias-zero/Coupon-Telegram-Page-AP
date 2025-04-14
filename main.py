@@ -3,8 +3,9 @@ import logging
 import pandas as pd
 from flask import Flask
 from threading import Thread
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime, timezone, timedelta
+import asyncio
 from telegram.ext import ApplicationBuilder, ContextTypes
 
 # ━━━━━━━━━━━━━━━━━━━━━ إعدادات البوت الأساسية ━━━━━━━━━━━━━━━━━━━━━
@@ -94,8 +95,12 @@ async def post_scheduled_coupon():
     except Exception as e:
         logger.error(f"فشل في النشر: {e}")
 
+# دالة وسيطة لتشغيل الدوال غير المتزامنة عبر asyncio.run()
+def run_async_task(coro):
+    asyncio.run(coro())
+
 def schedule_jobs():
-    scheduler = AsyncIOScheduler(timezone="UTC")
+    scheduler = BackgroundScheduler(timezone="UTC")
 
     # جدولة النشر من 8 صباحًا إلى 2 ليلاً (18 ساعة)
     for hour in range(8, 26):
@@ -104,19 +109,21 @@ def schedule_jobs():
             minute=0,
             second=0,
             microsecond=0
-        ) + timedelta(days=hour//24)
+        ) + timedelta(days=hour // 24)
 
         scheduler.add_job(
-            post_scheduled_coupon,
+            run_async_task,
             'interval',
             hours=1,
             start_date=scheduled_time,
+            args=[post_scheduled_coupon],
             max_instances=1
         )
 
     scheduler.start()
 
 def main():
+    # تشغيل Flask في Thread منفصل لفحص الـ Health Check
     Thread(target=run_flask).start()
 
     global application
