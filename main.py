@@ -98,13 +98,6 @@ async def post_scheduled_coupon():
 def run_async_task(coro):
     asyncio.run(coro())
 
-# ━━━━━━━━━━━━━━━━━━━━━ إرسال رسالة عند بدء التشغيل ━━━━━━━━━━━━━━━━━━━━━
-async def send_startup_message():
-    await application.bot.send_message(
-        chat_id=CHANNEL_USERNAME,
-        text="🔔 البوت يعمل الآن بنجاح!"
-    )
-
 # ━━━━━━━━━━━━━━━━━━━━━ جدولة المهام ━━━━━━━━━━━━━━━━━━━━━
 def schedule_jobs():
     scheduler = BackgroundScheduler(timezone="UTC")
@@ -143,9 +136,6 @@ def main():
     application = ApplicationBuilder().token(token).build()
 
     schedule_jobs()
-
-    # إرسال رسالة عند بدء التشغيل للتأكيد
-    asyncio.run(send_startup_message())
 
     logger.info("✅ البوت يعمل...")
     application.run_polling()
