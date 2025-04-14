@@ -6,7 +6,7 @@ from threading import Thread
 from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime, timezone, timedelta
 import asyncio
-from telegram.ext import ApplicationBuilder, ContextTypes
+from telegram.ext import ApplicationBuilder
 
 # ━━━━━━━━━━━━━━━━━━━━━ إعدادات البوت الأساسية ━━━━━━━━━━━━━━━━━━━━━
 CHANNEL_USERNAME = "@discountcoupononline"
@@ -32,7 +32,8 @@ def load_last_index():
     try:
         with open(LAST_INDEX_FILE, 'r') as f:
             return int(f.read().strip())
-    except:
+    except Exception as e:
+        logger.error(f"خطأ في قراءة last_index: {e}")
         return 0
 
 # ━━━━━━━━━━━━━━━━━━━━━ وظائف الكوبونات ━━━━━━━━━━━━━━━━━━━━━
@@ -48,10 +49,8 @@ def load_coupons():
 def get_next_coupon(df):
     last_index = load_last_index()
     total_coupons = len(df)
-
     if total_coupons == 0:
         return None, 0
-
     current_index = last_index % total_coupons
     next_index = (current_index + 1) % total_coupons
     return df.iloc[current_index], next_index
@@ -95,13 +94,13 @@ async def post_scheduled_coupon():
     except Exception as e:
         logger.error(f"فشل في النشر: {e}")
 
-# دالة وسيطة لتشغيل الدوال غير المتزامنة عبر asyncio.run()
+# دالة وسيطة لتشغيل الدوال غير المتزامنة باستخدام asyncio.run()
 def run_async_task(coro):
     asyncio.run(coro())
 
+# ━━━━━━━━━━━━━━━━━━━━━ جدولة المهام ━━━━━━━━━━━━━━━━━━━━━
 def schedule_jobs():
     scheduler = BackgroundScheduler(timezone="UTC")
-
     # جدولة النشر من 8 صباحًا إلى 2 ليلاً (18 ساعة)
     for hour in range(8, 26):
         scheduled_time = datetime.now(timezone.utc).replace(
@@ -110,7 +109,6 @@ def schedule_jobs():
             second=0,
             microsecond=0
         ) + timedelta(days=hour // 24)
-
         scheduler.add_job(
             run_async_task,
             'interval',
@@ -119,11 +117,18 @@ def schedule_jobs():
             args=[post_scheduled_coupon],
             max_instances=1
         )
-
     scheduler.start()
 
+# ━━━━━━━━━━━━━━━━━━━━━ الدالة الرئيسية ━━━━━━━━━━━━━━━━━━━━━
 def main():
-    # تشغيل Flask في Thread منفصل لفحص الـ Health Check
+    # التأكد من وجود حلقة أحداث قبل بدء الجدولة
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+    # بدء Flask في Thread منفصل لفحص الـ Health Check
     Thread(target=run_flask).start()
 
     global application
