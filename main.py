@@ -1,17 +1,19 @@
 import os
+import json
 import logging
 import pandas as pd
 from flask import Flask
 from threading import Thread
 from apscheduler.schedulers.background import BackgroundScheduler
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
 import asyncio
 from telegram.ext import ApplicationBuilder
+import pytz
 
 # ━━━━━━━━━━━━━━━━━━━━━ إعدادات البوت الأساسية ━━━━━━━━━━━━━━━━━━━━━
 CHANNEL_USERNAME = "@discountcoupononline"
 COUPONS_FILE = "coupons.xlsx"
-LAST_INDEX_FILE = "last_index.txt"
+STATUS_FILE = "status.json"  # لحفظ حالة النشر (last_index و cycle_date)
 
 # ━━━━━━━━━━━━━━━━━━━━━ Flask للـ Health Check ━━━━━━━━━━━━━━━━━━━━━
 app = Flask(__name__)
@@ -23,18 +25,25 @@ def health_check():
 def run_flask():
     app.run(host='0.0.0.0', port=8080)
 
-# ━━━━━━━━━━━━━━━━━━━━━ إدارة حالة النشر ━━━━━━━━━━━━━━━━━━━━━
-def save_last_index(index: int):
-    with open(LAST_INDEX_FILE, 'w') as f:
-        f.write(str(index))
+# ━━━━━━━━━━━━━━━━━━━━━ إدارة حالة النشر (status) ━━━━━━━━━━━━━━━━━━━━━
+def get_local_date():
+    tz = pytz.timezone("Africa/Algiers")
+    return datetime.now(tz).strftime("%Y-%m-%d")
 
-def load_last_index():
+def load_status():
     try:
-        with open(LAST_INDEX_FILE, 'r') as f:
-            return int(f.read().strip())
+        with open(STATUS_FILE, 'r', encoding="utf-8") as f:
+            return json.load(f)
     except Exception as e:
-        logger.error(f"خطأ في قراءة last_index: {e}")
-        return 0
+        # في حال عدم وجود الملف، نهيئ الحالة باستخدام تاريخ الجزائر الحالي ورقم بدء 0
+        current_day = get_local_date()
+        status = {"last_index": 0, "cycle_date": current_day}
+        save_status(status)
+        return status
+
+def save_status(status):
+    with open(STATUS_FILE, 'w', encoding="utf-8") as f:
+        json.dump(status, f)
 
 # ━━━━━━━━━━━━━━━━━━━━━ وظائف الكوبونات ━━━━━━━━━━━━━━━━━━━━━
 def load_coupons():
@@ -47,13 +56,27 @@ def load_coupons():
         return pd.DataFrame()
 
 def get_next_coupon(df):
-    last_index = load_last_index()
+    status = load_status()
     total_coupons = len(df)
     if total_coupons == 0:
-        return None, 0
-    current_index = last_index % total_coupons
-    next_index = (current_index + 1) % total_coupons
-    return df.iloc[current_index], next_index
+        return None, status
+    current_day = get_local_date()
+    # إذا تغير اليوم عن الدورة السابقة
+    if status["cycle_date"] != current_day:
+        # إذا كانت الدورة السابقة انتهت (تم استخدام كل الكوبونات)
+        if status["last_index"] >= total_coupons:
+            status["last_index"] = 0  # إعادة التعيين
+        status["cycle_date"] = current_day
+        save_status(status)
+    current_index = status["last_index"]
+    # إذا ما زال هناك كوبونات غير منشورة في الدورة الحالية
+    if current_index < total_coupons:
+        coupon = df.iloc[current_index]
+        new_index = current_index + 1
+        return coupon, new_index, status
+    else:
+        # لم يتبقَ كوبونات للنشر في هذه الدورة (اليوم)
+        return None, current_index, status
 
 # ━━━━━━━━━━━━━━━━━━━━━ النشر التلقائي ━━━━━━━━━━━━━━━━━━━━━
 async def post_scheduled_coupon():
@@ -62,8 +85,14 @@ async def post_scheduled_coupon():
         logger.error("لا توجد كوبونات متاحة للنشر")
         return
 
-    coupon, new_index = get_next_coupon(df)
+    result = get_next_coupon(df)
+    # نتيجة الدالة تختلف حسب توفر الكوبونات
+    if result is None:
+        logger.info("لا يوجد كوبون متبقي للنشر اليوم")
+        return
+    coupon, new_index, status = result
     if coupon is None:
+        logger.info("لا يوجد كوبون متبقي للنشر اليوم")
         return
 
     try:
@@ -88,9 +117,10 @@ async def post_scheduled_coupon():
                 text=message
             )
 
-        save_last_index(new_index)
-        logger.info(f"تم نشر الكوبون رقم {new_index} بنجاح")
-
+        # تحديث الحالة بعد النشر
+        status["last_index"] = new_index
+        save_status(status)
+        logger.info(f"تم نشر الكوبون رقم {new_index - 1} بنجاح")
     except Exception as e:
         logger.error(f"فشل في النشر: {e}")
 
@@ -100,28 +130,22 @@ def run_async_task(coro):
 
 # ━━━━━━━━━━━━━━━━━━━━━ جدولة المهام ━━━━━━━━━━━━━━━━━━━━━
 def schedule_jobs():
-    scheduler = BackgroundScheduler(timezone="UTC")
-    # جدولة النشر من 8 صباحًا إلى 2 ليلاً (18 ساعة)
-    for hour in range(8, 26):
-        scheduled_time = datetime.now(timezone.utc).replace(
-            hour=hour % 24,
-            minute=0,
-            second=0,
-            microsecond=0
-        ) + timedelta(days=hour // 24)
+    # نستخدم منطقة زمنية الجزائر "Africa/Algiers"
+    scheduler = BackgroundScheduler(timezone="Africa/Algiers")
+    # جدولة النشر من الساعة 3 صباحًا إلى الساعة 22:00 (أي 20 توقيتاً)
+    for hour in range(3, 23):  # 3,4,...,22
         scheduler.add_job(
             run_async_task,
-            'interval',
-            hours=1,
-            start_date=scheduled_time,
-            args=[post_scheduled_coupon],
-            max_instances=1
+            'cron',
+            hour=hour,
+            minute=0,
+            args=[post_scheduled_coupon]
         )
     scheduler.start()
 
 # ━━━━━━━━━━━━━━━━━━━━━ الدالة الرئيسية ━━━━━━━━━━━━━━━━━━━━━
 def main():
-    # التأكد من وجود حلقة أحداث قبل بدء الجدولة
+    # بدء حلقة الأحداث (في حال عدم وجود واحدة)
     try:
         asyncio.get_running_loop()
     except RuntimeError:
