@@ -98,11 +98,12 @@ async def post_scheduled_coupon():
     try:
         message = (
             f"🎉 كوبون {coupon['title']}\n"
-            f"{coupon['description']}\n\n"
+            f"🔥 {coupon['description']}\n\n"
             f"✅ الكوبون : {coupon['code']}\n"
             f"🌍 صالح لـ : {coupon['countries']}\n"
             f"📌 ملاحظة : {coupon['note']}\n"
             f"🛒 رابط الشراء : {coupon['link']}"
+            "💎 لمزيد من الكوبونات والخصومات قم بزيارة موقعنا : \n\nhttps://www.discountcoupon.online"
         )
 
         if pd.notna(coupon['image']) and str(coupon['image']).startswith('http'):
