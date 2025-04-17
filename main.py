@@ -97,12 +97,12 @@ async def post_scheduled_coupon():
 
     try:
         message = (
-            f"🎉 كوبون {coupon['title']}\n"
+            f"🎉 كوبون {coupon['title']}\n\n"
             f"🔥 {coupon['description']}\n\n"
-            f"✅ الكوبون : {coupon['code']}\n"
-            f"🌍 صالح لـ : {coupon['countries']}\n"
-            f"📌 ملاحظة : {coupon['note']}\n"
-            f"🛒 رابط الشراء : {coupon['link']}"
+            f"✅ الكوبون : {coupon['code']}\n\n"
+            f"🌍 صالح لـ : {coupon['countries']}\n\n"
+            f"📌 ملاحظة : {coupon['note']}\n\n"
+            f"🛒 رابط الشراء : {coupon['link']}\n\n"
             "💎 لمزيد من الكوبونات والخصومات قم بزيارة موقعنا : \n\nhttps://www.discountcoupon.online"
         )
 
