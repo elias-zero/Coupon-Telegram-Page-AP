@@ -34,8 +34,8 @@ def load_status():
     try:
         with open(STATUS_FILE, 'r', encoding="utf-8") as f:
             return json.load(f)
-    except Exception as e:
-        # في حال عدم وجود الملف، نهيئ الحالة باستخدام تاريخ الجزائر الحالي ورقم بدء 0
+    except Exception:
+        # في حال عدم وجود الملف، نهيئ الحالة بتاريخ اليوم ورقم بدء 0
         current_day = get_local_date()
         status = {"last_index": 0, "cycle_date": current_day}
         save_status(status)
@@ -61,21 +61,20 @@ def get_next_coupon(df):
     if total_coupons == 0:
         return None, status
     current_day = get_local_date()
-    # إذا تغير اليوم عن الدورة السابقة
+    # إذا تجاوزنا يوم الدورة السابقة
     if status["cycle_date"] != current_day:
-        # إذا كانت الدورة السابقة انتهت (تم استخدام كل الكوبونات)
+        # لو انتهت الدورة (وصلنا لنهاية القائمة)
         if status["last_index"] >= total_coupons:
-            status["last_index"] = 0  # إعادة التعيين
+            status["last_index"] = 0
         status["cycle_date"] = current_day
         save_status(status)
     current_index = status["last_index"]
-    # إذا ما زال هناك كوبونات غير منشورة في الدورة الحالية
+    # إذا تبقى كوبونات
     if current_index < total_coupons:
         coupon = df.iloc[current_index]
         new_index = current_index + 1
         return coupon, new_index, status
     else:
-        # لم يتبقَ كوبونات للنشر في هذه الدورة (اليوم)
         return None, current_index, status
 
 # ━━━━━━━━━━━━━━━━━━━━━ النشر التلقائي ━━━━━━━━━━━━━━━━━━━━━
@@ -86,7 +85,6 @@ async def post_scheduled_coupon():
         return
 
     result = get_next_coupon(df)
-    # نتيجة الدالة تختلف حسب توفر الكوبونات
     if result is None:
         logger.info("لا يوجد كوبون متبقي للنشر اليوم")
         return
@@ -103,7 +101,8 @@ async def post_scheduled_coupon():
             f"🌍 صالح لـ : {coupon['countries']}\n\n"
             f"📌 ملاحظة : {coupon['note']}\n\n"
             f"🛒 رابط الشراء : {coupon['link']}\n\n"
-            "💎 لمزيد من الكوبونات والخصومات قم بزيارة موقعنا : \n\nhttps://www.discountcoupon.online"
+            "💎 لمزيد من الكوبونات والخصومات قم بزيارة موقعنا:\n"
+            "https://www.discountcoupon.online"
         )
 
         if pd.notna(coupon['image']) and str(coupon['image']).startswith('http'):
@@ -131,29 +130,31 @@ def run_async_task(coro):
 
 # ━━━━━━━━━━━━━━━━━━━━━ جدولة المهام ━━━━━━━━━━━━━━━━━━━━━
 def schedule_jobs():
-    # نستخدم منطقة زمنية الجزائر "Africa/Algiers"
     scheduler = BackgroundScheduler(timezone="Africa/Algiers")
-    # جدولة النشر من الساعة 3 صباحًا إلى الساعة 22:00 (أي 20 توقيتاً)
-    for hour in range(3, 23):  # 3,4,...,22
-        scheduler.add_job(
-            run_async_task,
-            'cron',
-            hour=hour,
-            minute=0,
-            args=[post_scheduled_coupon]
-        )
+    # CronTrigger واحدة تنفّذ كل ساعة من 03:00 حتى 22:00
+    scheduler.add_job(
+        run_async_task,
+        'cron',
+        hour='3-22',
+        minute=0,
+        args=[post_scheduled_coupon],
+        id='daily_coupon_job'
+    )
     scheduler.start()
 
 # ━━━━━━━━━━━━━━━━━━━━━ الدالة الرئيسية ━━━━━━━━━━━━━━━━━━━━━
 def main():
-    # بدء حلقة الأحداث (في حال عدم وجود واحدة)
+    # ضمان وجود حلقة أحداث
     try:
         asyncio.get_running_loop()
     except RuntimeError:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
 
-    # بدء Flask في Thread منفصل لفحص الـ Health Check
+    # إنشاء status.json عند الإقلاع (اختياري)
+    load_status()
+
+    # تشغيل Flask في Thread منفصل لفحص الـ Health Check
     Thread(target=run_flask).start()
 
     global application
