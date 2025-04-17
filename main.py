@@ -151,7 +151,7 @@ def main():
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
 
-    # إنشاء status.json عند الإقلاع (اختياري)
+    # إنشاء status.json عند الإقلاع
     load_status()
 
     # تشغيل Flask في Thread منفصل لفحص الـ Health Check
@@ -163,8 +163,13 @@ def main():
 
     schedule_jobs()
 
+    # إزالة أي Webhook سابق وتفريغ التحديثات العالقة
+    asyncio.run(application.bot.delete_webhook())
+    logger.info("🔄 تمت إزالة أي Webhook سابق وتفريغ التحديثات العالقة")
+
     logger.info("✅ البوت يعمل...")
-    application.run_polling()
+    # تشغيل polling مع حذف التحديثات القديمة
+    application.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
     logging.basicConfig(
