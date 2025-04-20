@@ -121,7 +121,6 @@ async def post_scheduled_coupon():
 
 # ━━━━━━━━━━━━━━━━━━━━━ تشغيل دوال async في حلقة جديدة ━━━━━━━━━━━━━━━━━━━━━
 def run_async_task(coro):
-    # ننشئ حلقة أحداث جديدة لكل تنفيذ
     loop = asyncio.new_event_loop()
     try:
         asyncio.set_event_loop(loop)
@@ -135,7 +134,7 @@ def schedule_jobs():
     scheduler.add_job(
         run_async_task,
         'cron',
-        hour='3-22',    # من 03:00 إلى 22:00
+        hour='3-22',
         minute=0,
         args=[post_scheduled_coupon],
         id='daily_coupon_job'
@@ -144,13 +143,17 @@ def schedule_jobs():
 
 # ━━━━━━━━━━━━━━━━━━━━━ الدالة الرئيسية ━━━━━━━━━━━━━━━━━━━━━
 def main():
+    # إنشاء أو استرجاع حلقة أحداث رئيسية في MainThread
     try:
-        asyncio.get_running_loop()
+        loop = asyncio.get_running_loop()
     except RuntimeError:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
 
+    # إنشاء status.json عند الإقلاع
     load_status()
+
+    # تشغيل Flask في Thread منفصل لفحص الـ Health Check
     Thread(target=run_flask).start()
 
     global application
@@ -159,8 +162,8 @@ def main():
 
     schedule_jobs()
 
-    # إزالة أي Webhook قديم وتفريغ التحديثات العالقة
-    asyncio.run(application.bot.delete_webhook())
+    # باستخدام نفس حلقة الأحداث الرئيسية نحذف الـ webhook القديم
+    loop.run_until_complete(application.bot.delete_webhook())
     logger.info("🔄 تمت إزالة أي Webhook سابق وتفريغ التحديثات العالقة")
 
     logger.info("✅ البوت يعمل...")
