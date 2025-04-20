@@ -35,7 +35,6 @@ def load_status():
         with open(STATUS_FILE, 'r', encoding="utf-8") as f:
             return json.load(f)
     except Exception:
-        # في حال عدم وجود الملف، نهيئ الحالة بتاريخ اليوم ورقم بدء 0
         current_day = get_local_date()
         status = {"last_index": 0, "cycle_date": current_day}
         save_status(status)
@@ -61,15 +60,12 @@ def get_next_coupon(df):
     if total_coupons == 0:
         return None, status
     current_day = get_local_date()
-    # إذا تجاوزنا يوم الدورة السابقة
     if status["cycle_date"] != current_day:
-        # لو انتهت الدورة (وصلنا لنهاية القائمة)
         if status["last_index"] >= total_coupons:
             status["last_index"] = 0
         status["cycle_date"] = current_day
         save_status(status)
     current_index = status["last_index"]
-    # إذا تبقى كوبونات
     if current_index < total_coupons:
         coupon = df.iloc[current_index]
         new_index = current_index + 1
@@ -117,25 +113,29 @@ async def post_scheduled_coupon():
                 text=message
             )
 
-        # تحديث الحالة بعد النشر
         status["last_index"] = new_index
         save_status(status)
         logger.info(f"تم نشر الكوبون رقم {new_index - 1} بنجاح")
     except Exception as e:
         logger.error(f"فشل في النشر: {e}")
 
-# دالة وسيطة لتشغيل الدوال غير المتزامنة باستخدام asyncio.run()
+# ━━━━━━━━━━━━━━━━━━━━━ تشغيل دوال async في حلقة جديدة ━━━━━━━━━━━━━━━━━━━━━
 def run_async_task(coro):
-    asyncio.run(coro())
+    # ننشئ حلقة أحداث جديدة لكل تنفيذ
+    loop = asyncio.new_event_loop()
+    try:
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(coro())
+    finally:
+        loop.close()
 
 # ━━━━━━━━━━━━━━━━━━━━━ جدولة المهام ━━━━━━━━━━━━━━━━━━━━━
 def schedule_jobs():
     scheduler = BackgroundScheduler(timezone="Africa/Algiers")
-    # CronTrigger واحدة تنفّذ كل ساعة من 03:00 حتى 22:00
     scheduler.add_job(
         run_async_task,
         'cron',
-        hour='3-22',
+        hour='3-22',    # من 03:00 إلى 22:00
         minute=0,
         args=[post_scheduled_coupon],
         id='daily_coupon_job'
@@ -144,17 +144,13 @@ def schedule_jobs():
 
 # ━━━━━━━━━━━━━━━━━━━━━ الدالة الرئيسية ━━━━━━━━━━━━━━━━━━━━━
 def main():
-    # ضمان وجود حلقة أحداث
     try:
         asyncio.get_running_loop()
     except RuntimeError:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
 
-    # إنشاء status.json عند الإقلاع
     load_status()
-
-    # تشغيل Flask في Thread منفصل لفحص الـ Health Check
     Thread(target=run_flask).start()
 
     global application
@@ -163,12 +159,11 @@ def main():
 
     schedule_jobs()
 
-    # إزالة أي Webhook سابق وتفريغ التحديثات العالقة
+    # إزالة أي Webhook قديم وتفريغ التحديثات العالقة
     asyncio.run(application.bot.delete_webhook())
     logger.info("🔄 تمت إزالة أي Webhook سابق وتفريغ التحديثات العالقة")
 
     logger.info("✅ البوت يعمل...")
-    # تشغيل polling مع حذف التحديثات القديمة
     application.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
