@@ -58,35 +58,45 @@ def get_next_coupon(df):
     status = load_status()
     total_coupons = len(df)
     if total_coupons == 0:
-        return None, status
+        return None, status["last_index"], status
+    
     current_day = get_local_date()
+    
+    # إعادة الترتيب عند بداية يوم جديد فقط إذا انتهت جميع الكوبونات
     if status["cycle_date"] != current_day:
         if status["last_index"] >= total_coupons:
             status["last_index"] = 0
         status["cycle_date"] = current_day
         save_status(status)
+    
     current_index = status["last_index"]
     if current_index < total_coupons:
         coupon = df.iloc[current_index]
         new_index = current_index + 1
         return coupon, new_index, status
     else:
-        return None, current_index, status
+        # إعادة دورة جديدة إذا تم استنفاد جميع الكوبونات
+        status["last_index"] = 0
+        save_status(status)
+        # نحاول مرة أخرى الآن بعد إعادة التعيين
+        if total_coupons > 0:
+            coupon = df.iloc[0]
+            return coupon, 1, status
+        return None, 0, status
 
 # ━━━━━━━━━━━━━━━━━━━━━ النشر التلقائي ━━━━━━━━━━━━━━━━━━━━━
 async def post_scheduled_coupon():
+    logger.info("بدء عملية نشر كوبون جديد")
     df = load_coupons()
     if df.empty:
         logger.error("لا توجد كوبونات متاحة للنشر")
         return
 
     result = get_next_coupon(df)
-    if result is None:
-        logger.info("لا يوجد كوبون متبقي للنشر اليوم")
-        return
     coupon, new_index, status = result
+    
     if coupon is None:
-        logger.info("لا يوجد كوبون متبقي للنشر اليوم")
+        logger.info("لا يوجد كوبون متبقي للنشر")
         return
 
     try:
@@ -121,25 +131,33 @@ async def post_scheduled_coupon():
 
 # ━━━━━━━━━━━━━━━━━━━━━ تشغيل دوال async في حلقة جديدة ━━━━━━━━━━━━━━━━━━━━━
 def run_async_task(coro):
-    loop = asyncio.new_event_loop()
     try:
+        loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         loop.run_until_complete(coro())
+    except Exception as e:
+        logger.error(f"خطأ أثناء تنفيذ المهمة غير المتزامنة: {e}")
     finally:
         loop.close()
 
 # ━━━━━━━━━━━━━━━━━━━━━ جدولة المهام ━━━━━━━━━━━━━━━━━━━━━
 def schedule_jobs():
     scheduler = BackgroundScheduler(timezone="Africa/Algiers")
-    scheduler.add_job(
-        run_async_task,
-        'cron',
-        hour='3-22',
-        minute=0,
-        args=[post_scheduled_coupon],
-        id='daily_coupon_job'
-    )
+    
+    # إضافة مهمة للنشر كل ساعة من 3 صباحًا حتى 22 مساءً
+    for hour in range(3, 23):
+        scheduler.add_job(
+            run_async_task,
+            'cron',
+            hour=hour,
+            minute=0,
+            args=[post_scheduled_coupon],
+            id=f'daily_coupon_job_{hour}'
+        )
+        logger.info(f"تمت جدولة النشر للساعة {hour}:00")
+    
     scheduler.start()
+    logger.info("تم بدء المجدول بنجاح")
 
 # ━━━━━━━━━━━━━━━━━━━━━ الدالة الرئيسية ━━━━━━━━━━━━━━━━━━━━━
 def main():
@@ -154,12 +172,17 @@ def main():
     load_status()
 
     # تشغيل Flask في Thread منفصل لفحص الـ Health Check
-    Thread(target=run_flask).start()
+    Thread(target=run_flask, daemon=True).start()
 
     global application
     token = os.getenv("TOKEN")
+    if not token:
+        logger.error("لم يتم تعيين TOKEN في متغيرات البيئة!")
+        return
+        
     application = ApplicationBuilder().token(token).build()
 
+    # جدولة الوظائف
     schedule_jobs()
 
     # باستخدام نفس حلقة الأحداث الرئيسية نحذف الـ webhook القديم
