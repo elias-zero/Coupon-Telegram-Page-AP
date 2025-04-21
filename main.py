@@ -3,17 +3,19 @@ import json
 import logging
 import pandas as pd
 from flask import Flask
-from threading import Thread
+from threading import Thread, Lock
 from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime
 import asyncio
 from telegram.ext import ApplicationBuilder
 import pytz
+import time
 
 # ━━━━━━━━━━━━━━━━━━━━━ إعدادات البوت الأساسية ━━━━━━━━━━━━━━━━━━━━━
 CHANNEL_USERNAME = "@discountcoupononline"
 COUPONS_FILE = "coupons.xlsx"
 STATUS_FILE = "status.json"  # لحفظ حالة النشر (last_index و cycle_date)
+JOB_LOCK = Lock()  # قفل لمنع تشغيل وظائف متعددة في نفس الوقت
 
 # ━━━━━━━━━━━━━━━━━━━━━ Flask للـ Health Check ━━━━━━━━━━━━━━━━━━━━━
 app = Flask(__name__)
@@ -86,20 +88,25 @@ def get_next_coupon(df):
 
 # ━━━━━━━━━━━━━━━━━━━━━ النشر التلقائي ━━━━━━━━━━━━━━━━━━━━━
 async def post_scheduled_coupon():
-    logger.info("بدء عملية نشر كوبون جديد")
-    df = load_coupons()
-    if df.empty:
-        logger.error("لا توجد كوبونات متاحة للنشر")
+    # استخدام قفل لمنع تشغيل وظائف متعددة في نفس الوقت
+    if not JOB_LOCK.acquire(blocking=False):
+        logger.warning("هناك عملية نشر قيد التنفيذ بالفعل، تخطي هذه المهمة")
         return
-
-    result = get_next_coupon(df)
-    coupon, new_index, status = result
     
-    if coupon is None:
-        logger.info("لا يوجد كوبون متبقي للنشر")
-        return
-
     try:
+        logger.info("بدء عملية نشر كوبون جديد")
+        df = load_coupons()
+        if df.empty:
+            logger.error("لا توجد كوبونات متاحة للنشر")
+            return
+
+        result = get_next_coupon(df)
+        coupon, new_index, status = result
+        
+        if coupon is None:
+            logger.info("لا يوجد كوبون متبقي للنشر")
+            return
+
         message = (
             f"🎉 كوبون {coupon['title']}\n\n"
             f"🔥 {coupon['description']}\n\n"
@@ -125,9 +132,15 @@ async def post_scheduled_coupon():
 
         status["last_index"] = new_index
         save_status(status)
+        
+        # إضافة تأخير قصير لضمان إكمال الطلب
+        await asyncio.sleep(1)
+        
         logger.info(f"تم نشر الكوبون رقم {new_index - 1} بنجاح")
     except Exception as e:
         logger.error(f"فشل في النشر: {e}")
+    finally:
+        JOB_LOCK.release()
 
 # ━━━━━━━━━━━━━━━━━━━━━ تشغيل دوال async في حلقة جديدة ━━━━━━━━━━━━━━━━━━━━━
 def run_async_task(coro):
@@ -142,7 +155,7 @@ def run_async_task(coro):
 
 # ━━━━━━━━━━━━━━━━━━━━━ جدولة المهام ━━━━━━━━━━━━━━━━━━━━━
 def schedule_jobs():
-    scheduler = BackgroundScheduler(timezone="Africa/Algiers")
+    scheduler = BackgroundScheduler(timezone="Africa/Algiers", misfire_grace_time=60)
     
     # إضافة مهمة للنشر كل ساعة من 3 صباحًا حتى 22 مساءً
     for hour in range(3, 23):
@@ -152,7 +165,9 @@ def schedule_jobs():
             hour=hour,
             minute=0,
             args=[post_scheduled_coupon],
-            id=f'daily_coupon_job_{hour}'
+            id=f'daily_coupon_job_{hour}',
+            max_instances=1,  # تأكد من عدم وجود أكثر من مثيل لنفس الوظيفة
+            coalesce=True     # دمج المهام المتأخرة
         )
         logger.info(f"تمت جدولة النشر للساعة {hour}:00")
     
@@ -180,13 +195,17 @@ def main():
         logger.error("لم يتم تعيين TOKEN في متغيرات البيئة!")
         return
         
+    # انتظار بسيط قبل البدء لتجنب مشاكل إعادة التشغيل السريع
+    logger.info("انتظار 5 ثوانٍ قبل البدء...")
+    time.sleep(5)
+        
     application = ApplicationBuilder().token(token).build()
 
     # جدولة الوظائف
     schedule_jobs()
 
     # باستخدام نفس حلقة الأحداث الرئيسية نحذف الـ webhook القديم
-    loop.run_until_complete(application.bot.delete_webhook())
+    loop.run_until_complete(application.bot.delete_webhook(drop_pending_updates=True))
     logger.info("🔄 تمت إزالة أي Webhook سابق وتفريغ التحديثات العالقة")
 
     logger.info("✅ البوت يعمل...")
