@@ -10,12 +10,31 @@ import asyncio
 from telegram.ext import ApplicationBuilder
 import pytz
 import time
+import signal
+import sys
+import socket
+import fcntl
+import struct
 
 # ━━━━━━━━━━━━━━━━━━━━━ إعدادات البوت الأساسية ━━━━━━━━━━━━━━━━━━━━━
 CHANNEL_USERNAME = "@discountcoupononline"
 COUPONS_FILE = "coupons.xlsx"
 STATUS_FILE = "status.json"  # لحفظ حالة النشر (last_index و cycle_date)
+LOCK_FILE = "/tmp/telegrambot.lock"  # ملف لقفل البوت لضمان تشغيل نسخة واحدة فقط
 JOB_LOCK = Lock()  # قفل لمنع تشغيل وظائف متعددة في نفس الوقت
+
+# ━━━━━━━━━━━━━━━━━━━━━ قفل لضمان تشغيل نسخة واحدة فقط ━━━━━━━━━━━━━━━━━━━━━
+def create_singleton_lock():
+    """تأكد من أن هناك نسخة واحدة فقط من البوت تعمل"""
+    try:
+        # إنشاء سوكت للاستماع على منفذ محدد
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.bind(('localhost', 29876))  # منفذ مخصص للبوت فقط
+        s.listen(1)
+        return s
+    except socket.error:
+        logger.error("هناك نسخة أخرى من البوت تعمل بالفعل! إيقاف هذه النسخة...")
+        sys.exit(1)
 
 # ━━━━━━━━━━━━━━━━━━━━━ Flask للـ Health Check ━━━━━━━━━━━━━━━━━━━━━
 app = Flask(__name__)
@@ -95,6 +114,9 @@ async def post_scheduled_coupon():
     
     try:
         logger.info("بدء عملية نشر كوبون جديد")
+        current_hour = datetime.now(pytz.timezone("Africa/Algiers")).hour
+        logger.info(f"الساعة الحالية: {current_hour}")
+        
         df = load_coupons()
         if df.empty:
             logger.error("لا توجد كوبونات متاحة للنشر")
@@ -134,7 +156,7 @@ async def post_scheduled_coupon():
         save_status(status)
         
         # إضافة تأخير قصير لضمان إكمال الطلب
-        await asyncio.sleep(1)
+        await asyncio.sleep(2)
         
         logger.info(f"تم نشر الكوبون رقم {new_index - 1} بنجاح")
     except Exception as e:
@@ -145,17 +167,22 @@ async def post_scheduled_coupon():
 # ━━━━━━━━━━━━━━━━━━━━━ تشغيل دوال async في حلقة جديدة ━━━━━━━━━━━━━━━━━━━━━
 def run_async_task(coro):
     try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(coro())
+        # استخدام حلقة موجودة إذا كانت متاحة
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_closed():
+                raise RuntimeError("الحلقة مغلقة")
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        return loop.run_until_complete(coro())
     except Exception as e:
         logger.error(f"خطأ أثناء تنفيذ المهمة غير المتزامنة: {e}")
-    finally:
-        loop.close()
 
 # ━━━━━━━━━━━━━━━━━━━━━ جدولة المهام ━━━━━━━━━━━━━━━━━━━━━
 def schedule_jobs():
-    scheduler = BackgroundScheduler(timezone="Africa/Algiers", misfire_grace_time=60)
+    scheduler = BackgroundScheduler(timezone="Africa/Algiers", misfire_grace_time=120)
     
     # إضافة مهمة للنشر كل ساعة من 3 صباحًا حتى 22 مساءً
     for hour in range(3, 23):
@@ -167,15 +194,33 @@ def schedule_jobs():
             args=[post_scheduled_coupon],
             id=f'daily_coupon_job_{hour}',
             max_instances=1,  # تأكد من عدم وجود أكثر من مثيل لنفس الوظيفة
-            coalesce=True     # دمج المهام المتأخرة
+            coalesce=True,    # دمج المهام المتأخرة
+            replace_existing=True  # استبدال المهام الموجودة عند إعادة التشغيل
         )
         logger.info(f"تمت جدولة النشر للساعة {hour}:00")
     
     scheduler.start()
     logger.info("تم بدء المجدول بنجاح")
 
+# ━━━━━━━━━━━━━━━━━━━━━ معالج الخروج ━━━━━━━━━━━━━━━━━━━━━
+def signal_handler(sig, frame):
+    logger.info("تم استلام إشارة الإيقاف، إغلاق البوت بأمان...")
+    # تنفيذ عمليات التنظيف هنا
+    sys.exit(0)
+
 # ━━━━━━━━━━━━━━━━━━━━━ الدالة الرئيسية ━━━━━━━━━━━━━━━━━━━━━
 def main():
+    # تسجيل معالج الإشارات
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    
+    # تأكد من أن هناك نسخة واحدة فقط من البوت تعمل
+    lock_socket = create_singleton_lock()
+    
+    # انتظار قبل بدء البوت لضمان عدم وجود مثيلات أخرى قيد التشغيل
+    logger.info("انتظار 10 ثوانٍ قبل البدء للتأكد من عدم وجود مثيلات أخرى قيد التشغيل...")
+    time.sleep(10)
+    
     # إنشاء أو استرجاع حلقة أحداث رئيسية في MainThread
     try:
         loop = asyncio.get_running_loop()
@@ -187,34 +232,58 @@ def main():
     load_status()
 
     # تشغيل Flask في Thread منفصل لفحص الـ Health Check
-    Thread(target=run_flask, daemon=True).start()
+    flask_thread = Thread(target=run_flask, daemon=True)
+    flask_thread.start()
 
     global application
     token = os.getenv("TOKEN")
     if not token:
         logger.error("لم يتم تعيين TOKEN في متغيرات البيئة!")
         return
-        
-    # انتظار بسيط قبل البدء لتجنب مشاكل إعادة التشغيل السريع
-    logger.info("انتظار 5 ثوانٍ قبل البدء...")
-    time.sleep(5)
-        
-    application = ApplicationBuilder().token(token).build()
+    
+    # إنشاء تطبيق البوت مع إعدادات إضافية
+    application = (
+        ApplicationBuilder()
+        .token(token)
+        .concurrent_updates(False)  # تعطيل التحديثات المتزامنة
+        .build()
+    )
+
+    # حذف أي webhook وتفريغ أي تحديثات معلقة
+    try:
+        loop.run_until_complete(application.bot.delete_webhook(drop_pending_updates=True))
+        logger.info("🔄 تمت إزالة أي Webhook سابق وتفريغ التحديثات العالقة")
+    except Exception as e:
+        logger.error(f"خطأ في حذف الـ webhook: {e}")
+        # انتظار وإعادة المحاولة
+        time.sleep(5)
+        loop.run_until_complete(application.bot.delete_webhook(drop_pending_updates=True))
 
     # جدولة الوظائف
     schedule_jobs()
 
-    # باستخدام نفس حلقة الأحداث الرئيسية نحذف الـ webhook القديم
-    loop.run_until_complete(application.bot.delete_webhook(drop_pending_updates=True))
-    logger.info("🔄 تمت إزالة أي Webhook سابق وتفريغ التحديثات العالقة")
-
+    # تشغيل البوت
     logger.info("✅ البوت يعمل...")
-    application.run_polling(drop_pending_updates=True)
+    application.run_polling(
+        drop_pending_updates=True,
+        close_loop=False,
+        timeout=30,
+        read_timeout=30,
+        write_timeout=30,
+        connect_timeout=30
+    )
 
 if __name__ == '__main__':
+    # إعداد التسجيل
     logging.basicConfig(
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         level=logging.INFO
     )
     logger = logging.getLogger(__name__)
-    main()
+    
+    # تشغيل الدالة الرئيسية
+    try:
+        main()
+    except Exception as e:
+        logger.critical(f"خطأ حرج أدى إلى توقف البوت: {e}")
+        sys.exit(1)
