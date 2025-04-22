@@ -29,7 +29,8 @@ def health_check():
     return "OK", 200
 
 def run_flask():
-    app.run(host='0.0.0.0', port=8080, use_reloader=False)
+    from waitress import serve
+    serve(app, host="0.0.0.0", port=8080)
 
 # ━━━━━━━━━━━━━━━━━━━━━ إدارة القفل المحسنة ━━━━━━━━━━━━━━━━━━━━━
 def create_lock():
@@ -129,8 +130,7 @@ async def post_coupon():
 # ━━━━━━━━━━━━━━━━━━━━━ جدولة المهام المحسنة ━━━━━━━━━━━━━━━━━━━━━
 def trigger_post():
     try:
-        loop = asyncio.get_event_loop()
-        asyncio.run_coroutine_threadsafe(post_coupon(), loop)
+        asyncio.run_coroutine_threadsafe(post_coupon(), application.updater.event_loop)
     except Exception as e:
         logger.error(f"فشل في تشغيل المهمة: {e}")
 
@@ -159,15 +159,12 @@ def main():
         sys.exit(1)
 
     try:
-        application = (
-            ApplicationBuilder()
-            .token(token)
-            .post_init(lambda app: logger.info("تم تهيئة البوت بنجاح"))
-            .build()
-        )
+        # بناء تطبيق البوت بدون post_init
+        application = ApplicationBuilder().token(token).build()
 
+        # تشغيل Flask في Thread منفصل مع Waitress
         Thread(target=run_flask, daemon=True).start()
-        time.sleep(2)  # إعطاء وقت لبدء Flask
+        time.sleep(2)  # إعطاء وقت لبدء الخادم
         
         schedule_jobs()
         
@@ -181,6 +178,7 @@ def main():
         os.unlink(LOCK_FILE)
 
 if __name__ == '__main__':
+    # إعدادات التسجيل
     logging.basicConfig(
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         level=logging.INFO,
@@ -191,6 +189,7 @@ if __name__ == '__main__':
     )
     logger = logging.getLogger(__name__)
     
-    # التحقق من الوقت عند البدء
-    logger.info(f"الوقت الحالي على السيرفر: {datetime.now()}")
+    # التحقق من الوقت
+    logger.info(f"الوقت الحقيقي على السيرفر: {datetime.now()}")
+    
     main()
