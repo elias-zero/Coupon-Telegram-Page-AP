@@ -159,12 +159,10 @@ def main():
         sys.exit(1)
 
     try:
-        # بناء تطبيق البوت بدون post_init
         application = ApplicationBuilder().token(token).build()
 
-        # تشغيل Flask في Thread منفصل مع Waitress
         Thread(target=run_flask, daemon=True).start()
-        time.sleep(2)  # إعطاء وقت لبدء الخادم
+        time.sleep(5)  # زيادة وقت الانتظار لبدء الخادم
         
         schedule_jobs()
         
@@ -178,7 +176,6 @@ def main():
         os.unlink(LOCK_FILE)
 
 if __name__ == '__main__':
-    # إعدادات التسجيل
     logging.basicConfig(
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         level=logging.INFO,
@@ -189,7 +186,8 @@ if __name__ == '__main__':
     )
     logger = logging.getLogger(__name__)
     
-    # التحقق من الوقت
-    logger.info(f"الوقت الحقيقي على السيرفر: {datetime.now()}")
+    # التحقق من الوقت الفعلي
+    current_time = datetime.now(pytz.timezone("Africa/Algiers"))
+    logger.info(f"الوقت الحقيقي على السيرفر: {current_time}")
     
     main()
