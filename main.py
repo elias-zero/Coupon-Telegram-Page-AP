@@ -19,7 +19,7 @@ import fcntl
 CHANNEL_USERNAME = "@discountcoupononline"
 COUPONS_FILE = "coupons.xlsx"
 STATUS_FILE = "status.json"
-LOCK_FILE = "telegrambot.lock"
+LOCK_FILE = "/tmp/telegrambot.lock"  # تم التعديل لمسار مطلق
 
 # ━━━━━━━━━━━━━━━━━━━━━ Flask للـ Health Check ━━━━━━━━━━━━━━━━━━━━━
 app = Flask(__name__)
@@ -30,6 +30,16 @@ def health_check():
 
 def run_flask():
     app.run(host='0.0.0.0', port=8080)
+
+# ━━━━━━━━━━━━━━━━━━━━━ إدارة القفل المحسنة ━━━━━━━━━━━━━━━━━━━━━
+def create_lock():
+    try:
+        fd = os.open(LOCK_FILE, os.O_CREAT | os.O_EXCL | os.O_RDWR)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return fd
+    except (IOError, OSError):
+        logger.error("هناك نسخة أخرى تعمل بالفعل!")
+        sys.exit(1)
 
 # ━━━━━━━━━━━━━━━━━━━━━ إدارة حالة النشر ━━━━━━━━━━━━━━━━━━━━━
 def get_local_date():
@@ -65,7 +75,6 @@ def get_next_coupon(df):
     if status["cycle_date"] != current_day:
         status["last_index"] = 0
         status["cycle_date"] = current_day
-        save_status(status)
     
     if status["last_index"] >= len(df):
         status["last_index"] = 0
@@ -75,7 +84,7 @@ def get_next_coupon(df):
     save_status(status)
     return coupon
 
-# ━━━━━━━━━━━━━━━━━━━━━ النشر التلقائي ━━━━━━━━━━━━━━━━━━━━━
+# ━━━━━━━━━━━━━━━━━━━━━ النشر التلقائي المحسّن ━━━━━━━━━━━━━━━━━━━━━
 async def post_coupon():
     try:
         logger.info("بدء عملية نشر كوبون جديد")
@@ -98,25 +107,31 @@ async def post_coupon():
             "https://www.discountcoupon.online"
         )
 
-        if pd.notna(coupon['image']) and str(coupon['image']).startswith('http'):
-            await application.bot.send_photo(
-                chat_id=CHANNEL_USERNAME,
-                photo=coupon['image'],
-                caption=message
-            )
-        else:
-            await application.bot.send_message(
-                chat_id=CHANNEL_USERNAME,
-                text=message
-            )
-        
-        logger.info("تم النشر بنجاح")
-    except Exception as e:
-        logger.error(f"فشل في النشر: {e}")
+        try:
+            if pd.notna(coupon['image']) and str(coupon['image']).startswith('http'):
+                await application.bot.send_photo(
+                    chat_id=CHANNEL_USERNAME,
+                    photo=coupon['image'],
+                    caption=message
+                )
+            else:
+                await application.bot.send_message(
+                    chat_id=CHANNEL_USERNAME,
+                    text=message
+                )
+            logger.info("تم النشر بنجاح")
+        except Exception as send_error:
+            logger.error(f"فشل في إرسال الرسالة: {send_error}")
 
-# ━━━━━━━━━━━━━━━━━━━━━ جدولة المهام ━━━━━━━━━━━━━━━━━━━━━
+    except Exception as e:
+        logger.error(f"خطأ عام في النشر: {e}")
+
+# ━━━━━━━━━━━━━━━━━━━━━ جدولة المهام المحسنة ━━━━━━━━━━━━━━━━━━━━━
 def trigger_post():
-    asyncio.run_coroutine_threadsafe(post_coupon(), application.updater.event_loop)
+    try:
+        asyncio.run_coroutine_threadsafe(post_coupon(), application.updater.event_loop)
+    except Exception as e:
+        logger.error(f"فشل في تشغيل المهمة: {e}")
 
 def schedule_jobs():
     scheduler = BackgroundScheduler(timezone="Africa/Algiers")
@@ -125,48 +140,56 @@ def schedule_jobs():
         'cron',
         hour='3-22',
         minute=0,
-        misfire_grace_time=300
+        misfire_grace_time=600
     )
     scheduler.start()
 
-# ━━━━━━━━━━━━━━━━━━━━━ إدارة النسخة الواحدة ━━━━━━━━━━━━━━━━━━━━━
-def create_lock():
-    lock_file = open(LOCK_FILE, 'w')
-    try:
-        fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        return lock_file
-    except:
-        logger.error("هناك نسخة أخرى تعمل بالفعل!")
-        sys.exit(1)
-
-# ━━━━━━━━━━━━━━━━━━━━━ الدالة الرئيسية ━━━━━━━━━━━━━━━━━━━━━
+# ━━━━━━━━━━━━━━━━━━━━━ الدالة الرئيسية المعدلة ━━━━━━━━━━━━━━━━━━━━━
 def main():
     signal.signal(signal.SIGINT, lambda s, f: sys.exit(0))
-    create_lock()
+    
+    # إنشاء القفل قبل أي عمليات أخرى
+    lock_fd = create_lock()
     
     global application
-    token = os.getenv("TOKEN")  # تم التعديل هنا
+    token = os.getenv("TOKEN")
     
     if not token:
-        logger.error("لم يتم تعيين TOKEN في المتغيرات البيئية!")  # تم التعديل هنا
-        return
+        logger.error("لم يتم تعيين TOKEN في المتغيرات البيئية!")
+        sys.exit(1)
 
-    application = (
-        ApplicationBuilder()
-        .token(token)
-        .build()
-    )
+    try:
+        application = (
+            ApplicationBuilder()
+            .token(token)
+            .post_init(lambda _: logger.info("تم تهيئة البوت بنجاح"))
+            .build()
+        )
 
-    Thread(target=run_flask, daemon=True).start()
-    schedule_jobs()
-    
-    logger.info("✅ البوت يعمل...")
-    application.run_polling(drop_pending_updates=True)
+        # تشغيل Flask في Thread منفصل
+        Thread(target=run_flask, daemon=True).start()
+        
+        # جدولة المهام
+        schedule_jobs()
+        
+        logger.info("✅ البوت يعمل...")
+        application.run_polling(
+            drop_pending_updates=True,
+            close_loop=False,
+            timeout=20
+        )
+    finally:
+        os.close(lock_fd)
+        os.unlink(LOCK_FILE)
 
 if __name__ == '__main__':
     logging.basicConfig(
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        level=logging.INFO
+        level=logging.INFO,
+        handlers=[
+            logging.FileHandler("bot.log"),
+            logging.StreamHandler()
+        ]
     )
     logger = logging.getLogger(__name__)
     main()
