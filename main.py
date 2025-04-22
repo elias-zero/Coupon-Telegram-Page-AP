@@ -19,7 +19,7 @@ import fcntl
 CHANNEL_USERNAME = "@discountcoupononline"
 COUPONS_FILE = "coupons.xlsx"
 STATUS_FILE = "status.json"
-LOCK_FILE = "/tmp/telegrambot.lock"  # تم التعديل لمسار مطلق
+LOCK_FILE = "/tmp/telegrambot.lock"
 
 # ━━━━━━━━━━━━━━━━━━━━━ Flask للـ Health Check ━━━━━━━━━━━━━━━━━━━━━
 app = Flask(__name__)
@@ -29,7 +29,7 @@ def health_check():
     return "OK", 200
 
 def run_flask():
-    app.run(host='0.0.0.0', port=8080)
+    app.run(host='0.0.0.0', port=8080, use_reloader=False)
 
 # ━━━━━━━━━━━━━━━━━━━━━ إدارة القفل المحسنة ━━━━━━━━━━━━━━━━━━━━━
 def create_lock():
@@ -129,7 +129,8 @@ async def post_coupon():
 # ━━━━━━━━━━━━━━━━━━━━━ جدولة المهام المحسنة ━━━━━━━━━━━━━━━━━━━━━
 def trigger_post():
     try:
-        asyncio.run_coroutine_threadsafe(post_coupon(), application.updater.event_loop)
+        loop = asyncio.get_event_loop()
+        asyncio.run_coroutine_threadsafe(post_coupon(), loop)
     except Exception as e:
         logger.error(f"فشل في تشغيل المهمة: {e}")
 
@@ -148,7 +149,6 @@ def schedule_jobs():
 def main():
     signal.signal(signal.SIGINT, lambda s, f: sys.exit(0))
     
-    # إنشاء القفل قبل أي عمليات أخرى
     lock_fd = create_lock()
     
     global application
@@ -162,21 +162,19 @@ def main():
         application = (
             ApplicationBuilder()
             .token(token)
-            .post_init(lambda _: logger.info("تم تهيئة البوت بنجاح"))
+            .post_init(lambda app: logger.info("تم تهيئة البوت بنجاح"))
             .build()
         )
 
-        # تشغيل Flask في Thread منفصل
         Thread(target=run_flask, daemon=True).start()
+        time.sleep(2)  # إعطاء وقت لبدء Flask
         
-        # جدولة المهام
         schedule_jobs()
         
         logger.info("✅ البوت يعمل...")
         application.run_polling(
             drop_pending_updates=True,
-            close_loop=False,
-            timeout=20
+            close_loop=False
         )
     finally:
         os.close(lock_fd)
@@ -192,4 +190,7 @@ if __name__ == '__main__':
         ]
     )
     logger = logging.getLogger(__name__)
+    
+    # التحقق من الوقت عند البدء
+    logger.info(f"الوقت الحالي على السيرفر: {datetime.now()}")
     main()
