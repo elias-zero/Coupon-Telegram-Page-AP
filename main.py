@@ -145,10 +145,10 @@ def main():
     create_lock()
     
     global application
-    token = os.getenv("TELEGRAM_TOKEN")
+    token = os.getenv("TOKEN")  # تم التعديل هنا
     
     if not token:
-        logger.error("لم يتم تعيين TELEGRAM_TOKEN في المتغيرات البيئية!")
+        logger.error("لم يتم تعيين TOKEN في المتغيرات البيئية!")  # تم التعديل هنا
         return
 
     application = (
