@@ -1,11 +1,10 @@
 import os
-import json
 import logging
 import pandas as pd
 from flask import Flask
 from threading import Thread
 from apscheduler.schedulers.background import BackgroundScheduler
-from datetime import datetime
+from datetime import datetime, timedelta
 import asyncio
 from telegram import Bot
 from telegram.ext import ApplicationBuilder
@@ -18,7 +17,7 @@ import fcntl
 # ━━━━━━━━━━━━━━━━━━━━━ إعدادات البوت الأساسية ━━━━━━━━━━━━━━━━━━━━━
 CHANNEL_USERNAME = "@discountcoupononline"
 COUPONS_FILE = "coupons.xlsx"
-STATUS_FILE = "status.json"
+INDEX_FILE = "last_index.txt"  # تم التعديل لاستخدام الملف الموجود
 LOCK_FILE = "/tmp/telegrambot.lock"
 
 # ━━━━━━━━━━━━━━━━━━━━━ Flask للـ Health Check ━━━━━━━━━━━━━━━━━━━━━
@@ -42,135 +41,138 @@ def create_lock():
         logger.error("هناك نسخة أخرى تعمل بالفعل!")
         sys.exit(1)
 
-# ━━━━━━━━━━━━━━━━━━━━━ إدارة حالة النشر ━━━━━━━━━━━━━━━━━━━━━
-def get_local_date():
-    tz = pytz.timezone("Africa/Algiers")
-    return datetime.now(tz).strftime("%Y-%m-%d")
-
-def load_status():
+# ━━━━━━━━━━━━━━━━━━━━━ إدارة الفهرس ━━━━━━━━━━━━━━━━━━━━━
+def load_index():
     try:
-        with open(STATUS_FILE, 'r') as f:
-            return json.load(f)
-    except Exception:
-        status = {"last_index": 0, "cycle_date": get_local_date()}
-        save_status(status)
-        return status
+        with open(INDEX_FILE, 'r') as f:
+            return int(f.read().strip())
+    except:
+        return 0
 
-def save_status(status):
-    with open(STATUS_FILE, 'w') as f:
-        json.dump(status, f)
+def save_index(index):
+    with open(INDEX_FILE, 'w') as f:
+        f.write(str(index))
 
 # ━━━━━━━━━━━━━━━━━━━━━ وظائف الكوبونات ━━━━━━━━━━━━━━━━━━━━━
 def load_coupons():
     try:
-        df = pd.read_excel(COUPONS_FILE)
+        df = pd.read_excel(COUPONS_FILE, engine='openpyxl')
         return df.dropna(how='all')
     except Exception as e:
         logger.error(f'خطأ في قراءة الملف: {e}')
         return pd.DataFrame()
 
-def get_next_coupon(df):
-    status = load_status()
-    current_day = get_local_date()
+def get_next_coupon():
+    df = load_coupons()
+    if df.empty:
+        return None
     
-    if status["cycle_date"] != current_day:
-        status["last_index"] = 0
-        status["cycle_date"] = current_day
+    current_index = load_index()
+    total = len(df)
     
-    if status["last_index"] >= len(df):
-        status["last_index"] = 0
+    # إعادة التعيين إذا تجاوز الفهرس عدد الكوبونات
+    if current_index >= total:
+        current_index = 0
     
-    coupon = df.iloc[status["last_index"]]
-    status["last_index"] += 1
-    save_status(status)
+    coupon = df.iloc[current_index]
+    new_index = current_index + 1
+    save_index(new_index)
+    
     return coupon
 
 # ━━━━━━━━━━━━━━━━━━━━━ النشر التلقائي المحسّن ━━━━━━━━━━━━━━━━━━━━━
 async def post_coupon():
     try:
-        logger.info("بدء عملية نشر كوبون جديد")
+        logger.info("--- بدء محاولة نشر جديدة ---")
         
-        df = load_coupons()
-        if df.empty:
-            logger.error("لا توجد كوبونات متاحة للنشر")
+        coupon = get_next_coupon()
+        if coupon is None:
+            logger.error("لا توجد كوبونات متاحة!")
             return
-
-        coupon = get_next_coupon(df)
-        
+            
         message = (
             f"🎉 كوبون {coupon['title']}\n\n"
             f"🔥 {coupon['description']}\n\n"
-            f"✅ الكوبون : {coupon['code']}\n\n"
-            f"🌍 صالح لـ : {coupon['countries']}\n\n"
-            f"📌 ملاحظة : {coupon['note']}\n\n"
-            f"🛒 رابط الشراء : {coupon['link']}\n\n"
-            "💎 لمزيد من الكوبونات والخصومات:\n"
-            "https://www.discountcoupon.online"
+            f"✅ الكوبون: {coupon['code']}\n\n"
+            f"🌍 صالح لـ: {coupon['countries']}\n\n"
+            f"📌 ملاحظة: {coupon['note']}\n\n"
+            f"🛒 رابط الشراء: {coupon['link']}\n\n"
+            "💎 لمزيد من الكوبونات:\nhttps://www.discountcoupon.online"
         )
 
-        try:
-            if pd.notna(coupon['image']) and str(coupon['image']).startswith('http'):
-                await application.bot.send_photo(
-                    chat_id=CHANNEL_USERNAME,
-                    photo=coupon['image'],
-                    caption=message
-                )
-            else:
-                await application.bot.send_message(
-                    chat_id=CHANNEL_USERNAME,
-                    text=message
-                )
-            logger.info("تم النشر بنجاح")
-        except Exception as send_error:
-            logger.error(f"فشل في إرسال الرسالة: {send_error}")
-
+        if pd.notna(coupon.get('image')) and str(coupon['image']).startswith('http'):
+            await application.bot.send_photo(
+                chat_id=CHANNEL_USERNAME,
+                photo=coupon['image'],
+                caption=message
+            )
+        else:
+            await application.bot.send_message(
+                chat_id=CHANNEL_USERNAME,
+                text=message
+            )
+            
+        logger.info("تم النشر بنجاح ✅")
+        
     except Exception as e:
-        logger.error(f"خطأ عام في النشر: {e}")
+        logger.error(f"فشل في النشر: {str(e)}")
 
-# ━━━━━━━━━━━━━━━━━━━━━ جدولة المهام المحسنة ━━━━━━━━━━━━━━━━━━━━━
+# ━━━━━━━━━━━━━━━━━━━━━ جدولة المهام ━━━━━━━━━━━━━━━━━━━━━
 def trigger_post():
     try:
-        asyncio.run_coroutine_threadsafe(post_coupon(), application.updater.event_loop)
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(post_coupon())
     except Exception as e:
-        logger.error(f"فشل في تشغيل المهمة: {e}")
+        logger.error(f"خطأ في الجدولة: {str(e)}")
 
 def schedule_jobs():
     scheduler = BackgroundScheduler(timezone="Africa/Algiers")
+    
+    # مهمة اختبارية فورية
+    scheduler.add_job(
+        trigger_post,
+        'date',
+        run_date=datetime.now() + timedelta(seconds=10)
+    )
+    
+    # جدولة كل ساعة من 3-22
     scheduler.add_job(
         trigger_post,
         'cron',
         hour='3-22',
-        minute=0,
-        misfire_grace_time=600
+        minute=0
     )
+    
     scheduler.start()
 
-# ━━━━━━━━━━━━━━━━━━━━━ الدالة الرئيسية المعدلة ━━━━━━━━━━━━━━━━━━━━━
+# ━━━━━━━━━━━━━━━━━━━━━ الدالة الرئيسية ━━━━━━━━━━━━━━━━━━━━━
 def main():
     signal.signal(signal.SIGINT, lambda s, f: sys.exit(0))
-    
     lock_fd = create_lock()
     
     global application
     token = os.getenv("TOKEN")
     
     if not token:
-        logger.error("لم يتم تعيين TOKEN في المتغيرات البيئية!")
+        logger.error("المتغير البيئي TOKEN غير موجود!")
         sys.exit(1)
 
     try:
         application = ApplicationBuilder().token(token).build()
-
-        Thread(target=run_flask, daemon=True).start()
-        time.sleep(5)  # زيادة وقت الانتظار لبدء الخادم
         
+        # تشغيل الخدمات
+        Thread(target=run_flask, daemon=True).start()
         schedule_jobs()
         
-        logger.info("✅ البوت يعمل...")
+        # نشر تجريبي فوري
+        asyncio.run(post_coupon())
+        
         application.run_polling(
             drop_pending_updates=True,
             close_loop=False
         )
+        
     finally:
         os.close(lock_fd)
         os.unlink(LOCK_FILE)
@@ -185,9 +187,4 @@ if __name__ == '__main__':
         ]
     )
     logger = logging.getLogger(__name__)
-    
-    # التحقق من الوقت الفعلي
-    current_time = datetime.now(pytz.timezone("Africa/Algiers"))
-    logger.info(f"الوقت الحقيقي على السيرفر: {current_time}")
-    
     main()
