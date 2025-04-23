@@ -7,3 +7,5 @@ numpy>=1.26.0  # تم التحديث إلى إصدار متوافق مع Python 
 setuptools>=68.0.0  # أضف هذه السطر
 python-dotenv>=1.0.0
 waitress>=2.1.2
+pytz>=2023.3
+
