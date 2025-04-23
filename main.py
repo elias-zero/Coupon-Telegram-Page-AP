@@ -17,7 +17,7 @@ import fcntl
 # ━━━━━━━━━━━━━━━━━━━━━ إعدادات البوت الأساسية ━━━━━━━━━━━━━━━━━━━━━
 CHANNEL_USERNAME = "@discountcoupononline"
 COUPONS_FILE = "coupons.xlsx"
-INDEX_FILE = "last_index.txt"  # تم التعديل لاستخدام الملف الموجود
+INDEX_FILE = "last_index.txt"
 LOCK_FILE = "/tmp/telegrambot.lock"
 
 # ━━━━━━━━━━━━━━━━━━━━━ Flask للـ Health Check ━━━━━━━━━━━━━━━━━━━━━
@@ -70,13 +70,11 @@ def get_next_coupon():
     current_index = load_index()
     total = len(df)
     
-    # إعادة التعيين إذا تجاوز الفهرس عدد الكوبونات
     if current_index >= total:
         current_index = 0
     
     coupon = df.iloc[current_index]
-    new_index = current_index + 1
-    save_index(new_index)
+    save_index(current_index + 1)
     
     return coupon
 
@@ -117,7 +115,7 @@ async def post_coupon():
     except Exception as e:
         logger.error(f"فشل في النشر: {str(e)}")
 
-# ━━━━━━━━━━━━━━━━━━━━━ جدولة المهام ━━━━━━━━━━━━━━━━━━━━━
+# ━━━━━━━━━━━━━━━━━━━━━ جدولة المهام المحسنة ━━━━━━━━━━━━━━━━━━━━━
 def trigger_post():
     try:
         loop = asyncio.new_event_loop()
@@ -129,28 +127,19 @@ def trigger_post():
 def schedule_jobs():
     scheduler = BackgroundScheduler(timezone="Africa/Algiers")
     
-    # مهمة اختبارية فورية
-    scheduler.add_job(
-        trigger_post,
-        'date',
-        run_date=datetime.now() + timedelta(seconds=10)
-    )
-    
     # جدولة كل ساعة من 3-22
     scheduler.add_job(
         trigger_post,
         'cron',
         hour='3-22',
-        minute=0
+        minute=0,
+        misfire_grace_time=3600
     )
     
     scheduler.start()
 
-# ━━━━━━━━━━━━━━━━━━━━━ الدالة الرئيسية ━━━━━━━━━━━━━━━━━━━━━
-def main():
-    signal.signal(signal.SIGINT, lambda s, f: sys.exit(0))
-    lock_fd = create_lock()
-    
+# ━━━━━━━━━━━━━━━━━━━━━ الدالة الرئيسية المعدلة ━━━━━━━━━━━━━━━━━━━━━
+async def main_async():
     global application
     token = os.getenv("TOKEN")
     
@@ -158,21 +147,22 @@ def main():
         logger.error("المتغير البيئي TOKEN غير موجود!")
         sys.exit(1)
 
+    application = ApplicationBuilder().token(token).build()
+    
+    # تشغيل الخدمات
+    Thread(target=run_flask, daemon=True).start()
+    schedule_jobs()
+    
+    await application.initialize()
+    await application.start()
+    await application.updater.start_polling()
+
+def main():
+    signal.signal(signal.SIGINT, lambda s, f: sys.exit(0))
+    lock_fd = create_lock()
+    
     try:
-        application = ApplicationBuilder().token(token).build()
-        
-        # تشغيل الخدمات
-        Thread(target=run_flask, daemon=True).start()
-        schedule_jobs()
-        
-        # نشر تجريبي فوري
-        asyncio.run(post_coupon())
-        
-        application.run_polling(
-            drop_pending_updates=True,
-            close_loop=False
-        )
-        
+        asyncio.run(main_async())
     finally:
         os.close(lock_fd)
         os.unlink(LOCK_FILE)
